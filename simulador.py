@@ -264,7 +264,8 @@ def escena(a, info, modelo):
     g = df[(df.id // 100000 == trozo) & (df.sentido == a.sentido) & (df.carril > 0)].copy()
     if g.empty:
         raise SystemExit("trozo/sentido sin datos")
-    f0 = int(g.frame.min()) + int(a.desde * fps)
+    # t = 0 común a los dos sentidos: primer fotograma del trozo
+    f0 = int(df[df.id // 100000 == trozo].frame.min()) + int(a.desde * fps)
     f1 = f0 + int(a.duracion * fps)
     x_ini, x_fin = g.x.quantile(0.03), g.x.quantile(0.97)
     rng = np.random.default_rng(a.semilla)
@@ -324,7 +325,7 @@ def escena(a, info, modelo):
                 resto.append(r)
         espera = resto
         sim.paso()
-        if int(round(sim.t / DT)) % 2 == 0:
+        if True:
             registro += [(round(sim.t, 2), m["id"], m["x"], m["lat"], m["v"], m["clase"]) for m in sim.veh]
 
     # ---- comparación con la realidad
@@ -370,7 +371,8 @@ def escena(a, info, modelo):
     out = Path(a.camara) / f"sim_escena_{a.trozo}_{a.sentido}.csv"
     reg.to_csv(out, index=False)
     print(f"  trayectorias simuladas -> {out}")
-    return dict(x_ini=x_ini, x_fin=x_fin)
+    return dict(x_ini=x_ini, x_fin=x_fin, registro=reg, f0=f0, fps=fps, trozo=trozo,
+                centros=centros[a.sentido])
 
 
 # ---------------------------------------------------------------- modo sintético
