@@ -13,7 +13,8 @@ import numpy as np
 from ultralytics import YOLO
 
 # Ruta a los pesos; si no existe, ultralytics descarga yolov8m-seg.pt automáticamente
-MODELO = os.environ.get("YOLO_MODELO", "yolov8m-seg.pt")
+_LOCAL = Path.home() / "Desktop/AI/modelos/yolov8m-seg/yolov8m-seg.pt"
+MODELO = os.environ.get("YOLO_MODELO", str(_LOCAL) if _LOCAL.exists() else "yolov8m-seg.pt")
 CLASES = {2: "coche", 3: "moto", 5: "bus", 7: "camion"}  # ids COCO
 
 

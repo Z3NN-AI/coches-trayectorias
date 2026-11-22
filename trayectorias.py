@@ -77,6 +77,13 @@ def jac_num(fn, s, e=1e-5):
 
 # Vehículos pesados: giran más despacio y su límite de vuelco es bajo (~0,35 g)
 INERCIA = {"coche": 1.0, "moto": 1.0, "bus": 0.5, "camion": 0.5}
+# Masa de referencia (t): turismo ~1,4; bus 12-18; camión articulado hasta 40-44.
+MASA = {"moto": 0.25, "coche": 1.4, "bus": 15.0, "camion": 20.0}
+# Velocidad lateral máxima creíble en autovía (m/s): un cambio de carril normal dura
+# 3-6 s para ~3,6 m; un pesado es más lento. Limita el ángulo respecto a la carretera.
+V_LAT_MAX = {"moto": 1.8, "coche": 1.5, "bus": 0.9, "camion": 0.8}
+# Medidas antes de fiarse: un pesado entra en escena más deformado (caja que crece)
+N_FIABLE = {"moto": 8, "coche": 10, "bus": 18, "camion": 18}
 
 
 def alat_confort(v):
@@ -205,13 +212,14 @@ class Vehiculo:
         self.rastro.append(self.s[:2].copy())
 
     def fiable(self):
-        return (self.s is not None and self.n >= 4
+        n_min = N_FIABLE.get(self.clase, 10) if self.robusto else 4
+        return (self.s is not None and self.n >= n_min
                 and np.sqrt(self.P[3, 3]) < np.radians(5) and self.s[2] > 1.0)
 
     K_SIG_TH = 0.5  # sigmas de rumbo que abre el cono
     TAU_A = 0.5  # s: la aceleración actual se desvanece en la predicción
 
-    def futuro(self, horizonte, paso=0.1, lider=None):
+    def futuro(self, horizonte, paso=0.1, lider=None, p_idm=None):
         """(centro, borde_izq, borde_der) como listas de (X, Z).
         lider: (puntos (X, Z) futuros del vehículo de delante, su velocidad, su largo)."""
         v, w, a = self.s[2], self.s[4], self.s[5]
@@ -222,11 +230,22 @@ class Vehiculo:
         sig_w = np.sqrt(max(self.P[4, 4], 0))
         sig_th = np.sqrt(max(self.P[3, 3], 0))
         dw = float(np.clip(2 * sig_w, 0.3 * w_conf, w_conf))
+        # autovía: el ángulo respecto a la carretera no puede superar el de un cambio de
+        # carril creíble para su clase (evita giros imposibles de vehículos recién vistos)
+        lim = carretera = None
+        if self.robusto and self.rumbo_prior is not None:
+            carretera = min((self.rumbo_prior, self.rumbo_prior + np.pi),
+                            key=lambda c: abs(np.angle(np.exp(1j * (c - self.s[3])))))
+            lim = float(np.arctan(V_LAT_MAX.get(self.clase, 1.5) / max(v, 3.0)))
         caminos = []
         for sgn in (0, 1, -1):
             s = self.s.copy()
             s[3] += sgn * self.K_SIG_TH * sig_th
             s[4] = np.clip(w + sgn * dw, -w_fis, w_fis)
+            if lim is not None:
+                dev = float(np.clip(np.angle(np.exp(1j * (s[3] - carretera))), -lim, lim))
+                s[3] = carretera + dev
+                s[4] = float(np.clip(s[4], -lim / horizonte, lim / horizonte))
             a0 = float(np.clip(a, -9.0, 4.0))
             pts = [s[:2].copy()]
             if lider is not None:
@@ -239,8 +258,15 @@ class Vehiculo:
                     lp, lv, ll = lider
                     u = np.array([np.cos(s[3]), np.sin(s[3])])
                     hueco = float((np.asarray(lp[min(k, len(lp) - 1)]) - s[:2]) @ u) - ll
-                    s[5] = idm(s[2], lv, hueco, T_i) if hueco < 60 else s[5]
-                s = mover(s, paso); pts.append(s[:2].copy())
+                    if hueco < 60:
+                        s[5] = (idm(s[2], lv, hueco, T_i) if p_idm is None else
+                                float(np.clip(idm_cal(s[2], lv, hueco, **p_idm), -9.0, 4.0)))
+                s = mover(s, paso)
+                if lim is not None:  # que el giro no lo saque del ángulo creíble
+                    dev = float(np.angle(np.exp(1j * (s[3] - carretera))))
+                    if abs(dev) > lim:
+                        s[3] = carretera + np.sign(dev) * lim; s[4] = 0.0
+                pts.append(s[:2].copy())
             caminos.append(pts)
         return caminos
 
@@ -260,6 +286,13 @@ def idm(v, v_lider, hueco, T=IDM_T):
     dv = v - v_lider  # >0: me acerco
     s_star = IDM_S0 + max(0.0, v * T + v * dv / (2 * np.sqrt(IDM_A * IDM_B)))
     return float(np.clip(IDM_A * (1 - (s_star / hueco) ** 2), -9.0, 0.5))
+
+
+def idm_cal(v, vl, s, v0, T, a, b, s0, delta=4):
+    """IDM completo con los parámetros calibrados del conductor promedio (comportamiento.py)."""
+    s = max(s, 0.1)
+    s_star = s0 + max(0.0, v * T + v * (v - vl) / (2 * np.sqrt(a * b)))
+    return a * (1 - (v / v0) ** delta - (s_star / s) ** 2)
 
 
 def t_comodo(v, hueco):
@@ -328,9 +361,9 @@ class Cenital:
             cv2.line(base, (0, v), (self.W, v), (90, 90, 90), 1)
             cv2.putText(base, f"{z} m", (4, v - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
                         (170, 170, 170), 1, cv2.LINE_AA)
-        cv2.putText(base, "VISTA CENITAL", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+        cv2.putText(base, "BIRD'S-EYE VIEW", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                     (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(base, "camara", (self.W // 2 - 24, self.H - 6),
+        cv2.putText(base, "camera", (self.W // 2 - 24, self.H - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
         self.base = base
 
@@ -343,7 +376,7 @@ class Cenital:
         self.capa = self.base.copy()
 
     def vehiculo(self, p, th, clase, col, texto=None, cono=None, centro=None, rastro=None,
-                 relleno=True):
+                 relleno=True, lados=None, banda=None, riesgo=None):
         L, A = DIMENSIONES.get(clase, (4.5, 1.8))
         u = np.array([np.cos(th), np.sin(th)])
         lejos = u if u[1] >= 0 else -u           # el punto medido es el lado más cercano
@@ -356,14 +389,31 @@ class Cenital:
         if cono is not None:
             izq, der = cono
             cv2.fillPoly(self.capa, [np.vstack([self.px(izq), self.px(der)[::-1]])], col)
+            if lados is not None and centro is not None:
+                # mitad del cono hacia la que probablemente cambiará de carril
+                for borde, pr in ((izq, lados[0]), (der, lados[1])):
+                    if pr >= 0.2:
+                        c_l = color_prob(pr)
+                        poly = np.vstack([self.px(borde), self.px(centro)[::-1]])
+                        cv2.fillPoly(self.capa, [poly], c_l)
+                        cv2.polylines(self.img, [self.px(borde)], False, c_l, 2, cv2.LINE_AA)
         if centro is not None:
             cc = self.px(centro)
             cv2.polylines(self.img, [cc], False, col, 2, cv2.LINE_AA)
             for k in range(5, len(cc), 5):
                 cv2.circle(self.img, tuple(cc[k]), 3, col, -1, cv2.LINE_AA)
+        if banda is not None:
+            # dónde estará al final del horizonte: del percentil 10 al 90 (IDM calibrado)
+            b = self.px(banda)
+            cv2.line(self.img, tuple(map(int, b[0])), tuple(map(int, b[1])), (255, 255, 255), 4,
+                     cv2.LINE_AA)
+            for q in b:
+                cv2.circle(self.img, tuple(map(int, q)), 3, (255, 255, 255), -1, cv2.LINE_AA)
         if relleno:
             cv2.fillPoly(self.img, [self.px(esq)], col)
             cv2.polylines(self.img, [self.px(esq)], True, (0, 0, 0), 1, cv2.LINE_AA)
+        if riesgo is not None:
+            cv2.polylines(self.img, [self.px(esq)], True, riesgo, 3, cv2.LINE_AA)
         else:
             cv2.polylines(self.img, [self.px(esq)], True, col, 2, cv2.LINE_AA)
         if texto:
@@ -371,11 +421,116 @@ class Cenital:
             cv2.putText(self.img, texto, (int(q[0]) + 8, int(q[1]) + 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
 
+    def leyenda(self):
+        zona = self.img[self.H - 78:self.H - 14]
+        zona[:] = (zona * 0.3).astype(np.uint8)
+        for k, t in enumerate(["arrow: likely lane change", "white bar: where in 2 s",
+                               "red: rear-end  magenta: cut-in"]):
+            cv2.putText(self.img, t, (8, self.H - 60 + 20 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (235, 235, 235), 1, cv2.LINE_AA)
+
+    def cabecera(self, fluidez, avisos):
+        """Semáforo de fluidez por sentido y contador de riesgos (sobre fondo oscuro)."""
+        for y0, y1 in ((22, 112), (self.H - 64, self.H - 18)):
+            zona = self.img[y0:y1]
+            zona[:] = (zona * 0.35).astype(np.uint8)
+        y = 36
+        for sen, nombre in (("alejan", "outbound"), ("acercan", "inbound")):
+            f = fluidez.get(sen)
+            if f is None:
+                continue
+            cv2.circle(self.img, (16, y - 4), 7, f["color"], -1, cv2.LINE_AA)
+            t1 = f"{nombre}: {f['estado']}  {f['v']:.0f} km/h  {f['k']:.0f} veh/km/lane"
+            cv2.putText(self.img, t1, (28, y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1,
+                        cv2.LINE_AA)
+            col_t = (60, 60, 255) if "bottleneck" in f["tendencia"] else (200, 200, 200)
+            cv2.putText(self.img, "   forecast: " + f["tendencia"], (28, y + 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, col_t, 1, cv2.LINE_AA)
+            y += 36
+        cv2.putText(self.img, avisos, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1,
+                    cv2.LINE_AA)
+        leyenda = ["orange/red cone side: likely lane change",
+                   "white bar: position in 2 s (p10-p90)",
+                   "red: rear-end risk | magenta: cut-in risk"]
+        for k, t in enumerate(leyenda):
+            cv2.putText(self.img, t, (8, self.H - 50 + 14 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.35,
+                        (210, 210, 210), 1, cv2.LINE_AA)
+
     def final(self):
         return cv2.addWeighted(self.capa, 0.3, self.img, 0.7, 0)
 
 
 # ---------------------------------------------------------------- dibujo
+NOMBRE_EN = {"coche": "car", "moto": "bike", "camion": "truck", "bus": "bus"}
+# Plausibilidad: velocidad de referencia por clase (km/h). Un camión con limitador va a
+# ~90 (UK: 56 mph); verlo sostenido por encima de 100 = o va de loco o la medida falla.
+V_REF = {"camion": 90.0, "bus": 100.0}
+V_DUDOSA = {"camion": 100.0, "bus": 110.0}
+
+
+def flecha_cambio(img, p0, p1, prob, texto=True):
+    col = color_prob(prob)
+    cv2.arrowedLine(img, tuple(map(int, p0)), tuple(map(int, p1)), (0, 0, 0), 9, cv2.LINE_AA,
+                    tipLength=0.35)
+    cv2.arrowedLine(img, tuple(map(int, p0)), tuple(map(int, p1)), col, 5, cv2.LINE_AA,
+                    tipLength=0.35)
+    if texto:
+        t = f"{100 * prob:.0f}%"
+        org = (int(p1[0]) + (6 if p1[0] >= p0[0] else -60), int(p1[1]) + 6)
+        cv2.putText(img, t, org, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.putText(img, t, org, cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2, cv2.LINE_AA)
+
+
+def panel_lineas(titulo, f, n, vmedia, riesgos):
+    lineas = [(f"{titulo}  {f['estado']}" if f else titulo, 0.62, (255, 255, 255), 2)]
+    if f:
+        col_t = (80, 80, 255) if "bottleneck" in f["tendencia"] else (220, 220, 220)
+        lineas.append((f"now {f['v']:.0f} km/h  |  {f['k']:.0f} veh/km/lane", 0.5, (230, 230, 230), 1))
+        lineas.append((f"forecast: {f['tendencia']}", 0.5, col_t, 1))
+    lineas.append((f"passed: {n.get('coche', 0)} cars  {n.get('camion', 0)} trucks  "
+                   f"{n.get('moto', 0)} bikes  {n.get('bus', 0)} buses", 0.5, (230, 230, 230), 1))
+    lineas.append((f"average speed: {vmedia:.0f} km/h", 0.5, (230, 230, 230), 1))
+    lineas.append((riesgos, 0.5, (230, 230, 230), 1))
+    ancho = max(cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, e, g)[0][0] for t, e, _, g in lineas) + 46
+    return lineas, ancho
+
+
+def colocar_paneles(centros_x, anchos, W, sep=10):
+    """x0 de cada panel: centrado sobre su calzada, sin solaparse ni salirse."""
+    orden = np.argsort(centros_x)
+    x0 = {i: centros_x[i] - anchos[i] / 2 for i in orden}
+    for a, b in zip(orden[:-1], orden[1:]):
+        solape = x0[a] + anchos[a] + sep - x0[b]
+        if solape > 0:
+            x0[a] -= solape / 2; x0[b] += solape / 2
+    total = sum(anchos) + sep * (len(anchos) - 1)
+    ini = min(x0.values()); fin = max(x0[i] + anchos[i] for i in x0)
+    desp = max(0, 4 - ini) - max(0, fin - (W - 4)) if total < W else 0
+    return {i: int(x0[i] + desp) for i in x0}
+
+
+def panel_calzada(img, x0, y, lineas, ancho, f):
+    """Semáforo e información de una calzada, encima de ella en el vídeo real."""
+    alto = 14 + 22 * len(lineas)
+    zona = img[y:y + alto, x0:x0 + ancho]
+    zona[:] = (zona * 0.3).astype(np.uint8)
+    if f:
+        cv2.circle(img, (x0 + 18, y + 18), 10, f["color"], -1, cv2.LINE_AA)
+        cv2.circle(img, (x0 + 18, y + 18), 10, (255, 255, 255), 1, cv2.LINE_AA)
+    for k, (t, e, c, g) in enumerate(lineas):
+        cv2.putText(img, t, (x0 + 36, y + 24 + 22 * k), cv2.FONT_HERSHEY_SIMPLEX, e, c, g, cv2.LINE_AA)
+
+
+def color_prob(p):
+    """Amarillo (0,2) -> naranja -> rojo (≥0,7)."""
+    t = float(np.clip((p - 0.2) / 0.5, 0, 1))
+    return (0, int(220 - 190 * t), 255)
+
+
+P_FLECHA = 0.35
+RIESGO_ALCANCE, RIESGO_MEDIO, RIESGO_CORTE = (40, 40, 255), (0, 140, 255), (255, 0, 255)
+
+
 def color_id(tid):
     rng = np.random.default_rng(tid * 7919)
     h = int(rng.integers(0, 180))
@@ -394,6 +549,11 @@ def main():
                     help="no usar la dirección de la carretera al iniciar (rotondas, cruces)")
     ap.add_argument("--sin-video", action="store_true", help="solo evaluar, sin dibujar")
     ap.add_argument("--sin-cenital", action="store_true", help="no añadir la vista cenital")
+    ap.add_argument("--comportamiento", default=None,
+                    help="JSON de comportamiento.py: conductor promedio, fluidez y riesgo")
+    ap.add_argument("--camara", default=None, help="clave de la cámara en ese JSON")
+    ap.add_argument("--estados", default=None,
+                    help="guardar estados filtrados (X, Z, v, rumbo) por fotograma en este JSON")
     ap.add_argument("--punto", default="mixto", choices=["caja", "pie", "pie20", "mixto"],
                     help="punto de apoyo: centro inferior de la caja, punto más bajo de la máscara, centro de su franja inferior, o mixto (franja en ligeros, caja en pesados)")
     ap.add_argument("--sin-idm", action="store_true", help="sin interacción con el de delante")
@@ -418,6 +578,18 @@ def main():
     print(f"Modelo {a.modelo.upper()}, horizonte {a.horizonte}s, "
           f"prior de carretera: {'sí' if prior is not None else 'no'}")
 
+    cond = None
+    if a.comportamiento:
+        from conductor import Conductor, TTC_ALTO, TTC_MEDIO, HW_ALTO
+        cond = Conductor(a.comportamiento, a.camara or Path(a.pistas).parent.name, fps,
+                         suelo.rumbo_carretera())
+    if not a.sin_video and Path(a.salida).exists():
+        # nunca pisar un vídeo anterior
+        base, k = Path(a.salida), 2
+        while Path(a.salida).exists():
+            a.salida = str(base.with_name(f"{base.stem}_v{k}{base.suffix}")); k += 1
+        print(f"Ya existe {base}; se guarda en {a.salida}")
+
     cap = out = None
     if not a.sin_video:
         cap = cv2.VideoCapture(datos["video"])
@@ -431,6 +603,7 @@ def main():
     vehs: dict[int, Vehiculo] = {}    # número del seguidor -> vehículo
     memoria: set = set()              # vehículos con estado (vistos o fantasmas)
     velocidades = defaultdict(list)
+    estados = []                      # (frame, id, clase, X, Z, v, rumbo) de vehículos vistos
     medidas = defaultdict(dict)       # id vehículo -> {frame: (X, Z)}
     predicciones = []
     reapariciones = []                # (segundos sin verse, err física, err quieto, oculto?)
@@ -438,6 +611,7 @@ def main():
     MEM_OCULTO, MEM_PERDIDO = int(3.0 * fps), int(0.5 * fps)
 
     ocluidas = Counter()
+    n_dudosos = set()                 # vehículos con velocidad poco plausible para su clase
     herencias = 0
     giros = defaultdict(list)   # clase -> |w| de vehículos fiables (aquí todos van rectos)
 
@@ -563,6 +737,9 @@ def main():
         dibujar = [(v, caja) for v, caja in vistos.values() if v.fiable()]
         dibujar += [(v, None) for v in memoria if v.perdido > 0]
         activos = [v for v, _ in dibujar]
+        info, fluidez = cond.paso(activos) if cond is not None else ({}, {})
+        flechas_cen = []
+        pidm = (lambda v: cond.idm[info[v.id]["sentido"]]) if cond is not None else (lambda v: None)
         futuros = {id(v): v.futuro(a.horizonte) for v in activos}
         lideres = {id(v): buscar_lider(v, activos) for v in activos}
         for _ in range(0 if a.sin_idm else 3):  # la frenada se propaga por la cola
@@ -574,7 +751,8 @@ def main():
                     continue
                 lv, _ = L
                 dl = DIMENSIONES.get(lv.clase, (4.5, 1.8))[0]
-                nuevos[id(v)] = v.futuro(a.horizonte, lider=(futuros[id(lv)][0], lv.s[2], dl))
+                nuevos[id(v)] = v.futuro(a.horizonte, lider=(futuros[id(lv)][0], lv.s[2], dl),
+                                         p_idm=pidm(v))
             futuros = nuevos
         for v, caja in dibujar:
             kmh = v.s[2] * 3.6
@@ -583,6 +761,7 @@ def main():
             con_lider = L is not None and L[1] < 40
             if caja is not None:
                 velocidades[v.id].append((i, round(kmh, 1)))
+                estados.append((i, v.id, v.clase, *(round(float(q), 3) for q in v.s[:4])))
                 giros["pesado" if v.clase in ("camion", "bus") else "ligero"].append(abs(v.s[4]))
                 for h in hs:
                     k = int(round(h / 0.1))
@@ -611,28 +790,98 @@ def main():
                 cv2.polylines(img, [c], False, col, 1 if fantasma else 2, cv2.LINE_AA)
                 for k in range(5, len(c), 5):
                     cv2.circle(img, tuple(c[k]), 3, col, -1, cv2.LINE_AA)
+            I = info.get(v.id)
+            lados = banda = riesgo = None
+            if I is not None:
+                lados = (I["p_izq"], I["p_der"])
+                b = cond.banda(I["sentido"], a.horizonte)
+                if b is not None and len(centro) > 1:
+                    c_fin, c_ant = np.asarray(centro[-1]), np.asarray(centro[-2])
+                    u_ = (c_fin - c_ant) / max(np.linalg.norm(c_fin - c_ant), 1e-6)
+                    banda = [c_fin + u_ * b[0], c_fin + u_ * b[1]]
+                if I["corte"]:
+                    riesgo = RIESGO_CORTE
+                elif (I["ttc"] is not None and I["ttc"] < TTC_ALTO) or (I["hw"] is not None and I["hw"] < HW_ALTO):
+                    riesgo = RIESGO_ALCANCE
+                elif I["ttc"] is not None and I["ttc"] < TTC_MEDIO:
+                    riesgo = RIESGO_MEDIO
+                if riesgo is not None and not fantasma:
+                    cv2.rectangle(img, (x1 - 2, y1 - 2), (x2 + 2, y2 + 2), riesgo, 3)
+                pmax = max(lados)
+                if pmax >= P_FLECHA and not fantasma:
+                    # del vehículo hacia el centro del carril de destino, 8 m más adelante
+                    lado = 1.0 if I["p_izq"] >= I["p_der"] else -1.0
+                    th = v.s[3]
+                    u_ = np.array([np.cos(th), np.sin(th)]); n_ = np.array([-u_[1], u_[0]])
+                    q0 = v.s[:2] + n_ * lado * 1.0
+                    q1 = v.s[:2] + n_ * lado * 3.6 + u_ * 8.0
+                    if q0[1] > 1 and q1[1] > 1:
+                        flecha_cambio(img, suelo.a_imagen(*q0), suelo.a_imagen(*q1), pmax)
+                    if cen is not None:
+                        flechas_cen.append((q0, q1, pmax))
             if cen is not None:
-                cen.vehiculo(v.s[:2], v.s[3], v.clase, col, f"{kmh:.0f}", (izq, der),
-                             centro, list(v.rastro), relleno=not fantasma)
+                txt_cen = f"{kmh:.0f}"
+                if I is not None and I["ttc"] is not None and I["ttc"] < TTC_MEDIO:
+                    txt_cen += f" TTC {I['ttc']:.1f}s"
+                cen.vehiculo(v.s[:2], v.s[3], v.clase, col, None, (izq, der),
+                             centro, list(v.rastro), relleno=not fantasma, lados=lados,
+                             banda=banda, riesgo=riesgo)
                 if con_lider and not a.sin_idm:  # enlace con el vehículo que le condiciona
                     q1, q2 = cen.px([v.s[:2], L[0].s[:2]])
                     cv2.line(cen.img, tuple(map(int, q1)), tuple(map(int, q2)), (230, 230, 230), 1,
                              cv2.LINE_AA)
-            txt = f"#{v.id} {kmh:.0f} km/h"
+            nombre = NOMBRE_EN.get(v.clase, v.clase)
+            # plausibilidad: pesado por encima de su referencia de forma sostenida (≥1 s)
+            lim = V_DUDOSA.get(v.clase)
+            v.rapido = (getattr(v, "rapido", 0) + 1) if (lim and kmh > lim) else 0
+            dudoso = v.rapido >= fps
+            txt = f"{nombre} {kmh:.0f} km/h" + (" ?" if dudoso else "")
+            if dudoso:
+                n_dudosos.add(v.id)
             if fantasma:
-                txt = f"#{v.id} {'oculto' if v.oculto else 'perdido'} {v.perdido * dt:.1f}s"
+                txt = f"{nombre} {'occluded' if v.oculto else 'lost'} {v.perdido * dt:.1f}s"
             elif v.maniobra:
                 txt += " !"
-            (tw, th_), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            (tw, th_), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             cv2.rectangle(img, (x1, y1 - th_ - 6), (x1 + tw + 4, y1), col, -1)
-            cv2.putText(img, txt, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+            cv2.putText(img, txt, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (0, 0, 0), 1, cv2.LINE_AA)
+            if dudoso and not fantasma:
+                cv2.putText(img, f"check: {nombre} > {V_REF[v.clase]:.0f}+ km/h", (x1, y2 + 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 230, 255), 2, cv2.LINE_AA)
         if img is not None:
             img = cv2.addWeighted(capa, 0.25, img, 0.75, 0)
-            cv2.putText(img, f"{a.modelo.upper()}  |  prediccion {a.horizonte:.1f} s "
-                        f"(punto = 0.5 s)  |  ! = maniobra detectada", (10, 22),
+            img[:30, :560] = (img[:30, :560] * 0.4).astype(np.uint8)
+            cv2.putText(img, f"{a.modelo.upper()}  |  {a.horizonte:.1f} s prediction "
+                        f"(dot = 0.5 s)  |  ! = manoeuvre detected", (10, 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            if cond is not None:
+                # un panel encima de cada calzada
+                paneles = []
+                for sen, titulo in (("alejan", "OUTBOUND"), ("acercan", "INBOUND")):
+                    c_ = cond.centros.get(sen)
+                    if c_ is None:
+                        continue
+                    sg = 1 if sen == "alejan" else -1
+                    P_ = 45.0 * cond.u + sg * float(np.mean(c_)) * cond.n
+                    xc = suelo.a_imagen(*P_)[0]
+                    ids_s = [I for I in info.values() if I["sentido"] == sen]
+                    n_alc = sum(1 for I in ids_s if I["ttc"] is not None and I["ttc"] < TTC_ALTO)
+                    n_cor = sum(1 for I in ids_s if I["corte"])
+                    n_cls, vmed = cond.resumen(sen)
+                    lin, an = panel_lineas(titulo, fluidez.get(sen), n_cls, vmed,
+                                           f"risk now: rear-end {n_alc}  cut-in {n_cor}")
+                    paneles.append((xc, an, lin, fluidez.get(sen)))
+                if paneles:
+                    pos = colocar_paneles([p_[0] for p_ in paneles], [p_[1] for p_ in paneles], W)
+                    for k, (_, an, lin, f_) in enumerate(paneles):
+                        panel_calzada(img, pos[k], 36, lin, an, f_)
             if cen is not None:
+                for q0, q1, pr in flechas_cen:
+                    a0, a1 = cen.px([q0, q1])
+                    flecha_cambio(cen.img, a0, a1, pr, texto=False)
+                if cond is not None:
+                    cen.leyenda()
                 img = np.hstack([img, cen.final()])
             out.write(img)
 
@@ -644,6 +893,13 @@ def main():
         tmp.unlink()
         json.dump(velocidades, open(Path(a.salida).with_suffix(".velocidades.json"), "w"))
 
+    if a.estados:
+        json.dump({"fps": fps, "video": datos["video"], "rumbo_carretera": prior,
+                   "campos": ["frame", "id", "clase", "X", "Z", "v", "rumbo"],
+                   "estados": estados}, open(a.estados, "w"))
+    if n_dudosos:
+        print(f"Velocidad poco plausible para su clase (camión >100, bus >110 km/h ≥1 s): "
+              f"{len(n_dudosos)} vehículos")
     print(f"Medidas descartadas: {dict(ocluidas)}  |  identidades heredadas: {herencias}")
     if reapariciones:
         r = np.array(reapariciones)
