@@ -328,7 +328,7 @@ def rasgos(ids, X, V, C, L, VL, cen, p, elegidos=None, cortesia=0.3):
                 coste = idm_acc(V[ndt], v, max(hueco_det, 0.1), **p) - a_t_ahora
             izq = np.sign(cen[nuevo - 1] - cen[c - 1])  # +1: el carril destino está a la izquierda
             filas.append(dict(
-                i=i, de=c, a=nuevo, a_la_izquierda=bool(izq > 0),
+                i=i, de=c, a=nuevo, a_la_izquierda=bool(izq > 0), largo=float(L[i]),
                 hacia_mediana=1.0 if nuevo > c else -1.0, v=v,
                 ganancia=a_nuevo - a_yo, coste_detras=coste,
                 incentivo=(a_nuevo - a_yo) + cortesia * coste,
@@ -363,7 +363,7 @@ def muestras_volante(df, cambios, fps, params, centros):
 
 
 CONTEXTO = ["v", "ganancia", "coste_detras", "hueco_yo", "dv_yo", "hueco_del", "dv_del",
-            "hueco_det", "dv_det", "dv_carriles", "hacia_mediana", "carril_extremo"]
+            "hueco_det", "dv_det", "dv_carriles", "hacia_mediana", "carril_extremo", "largo", "de"]
 
 
 def evaluar_volante(mb):
