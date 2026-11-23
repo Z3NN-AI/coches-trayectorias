@@ -1,10 +1,12 @@
 """El experimento de Sugiyama (2008) en el ordenador: N coches en un circuito circular
 de un carril, todos intentando ir a la misma velocidad. ¿Sale un atasco fantasma?
 
-Dos poblaciones con EXACTAMENTE el mismo pedal (IDM calibrado en vídeo real):
-  - PERFECTOS: todos iguales (distancia mediana real), sin ruido.
-  - PROMEDIO: cada uno con su distancia (distribución real), su "humor" de velocidad
-    que oscila y la imprecisión del pie (los mismos que en simulador.py).
+Poblaciones:
+  - PERFECTOS: todos iguales, sin ruido ni retraso.
+  - HUMANOS: cada uno con su distancia (distribución real del vídeo), su aceleración,
+    frenada cómoda y tiempo de reacción (rangos de la literatura, HUMANOS), con
+    anticipación tipo Human Driver Model de Treiber, su "humor" de velocidad que oscila
+    y la imprecisión del pie (los mismos que en simulador.py).
 Las dos empiezan igual: repartidos uniformemente y con UN coche 1 m fuera de sitio.
 
 Uso: .venv/bin/python circuito.py [--n 22] [--largo 230] [--duracion 300] [--barrido]
@@ -20,7 +22,11 @@ import numpy as np
 from simulador import RUIDO_PEDAL, SIGMA_V0, TAU_V0
 
 DT = 0.1
-TAU_ROBOT = 30.0   # s, ventana de la velocidad media que sigue el robot
+TAU_ROBOT = 120.0  # s, ventana de la velocidad media que sigue el robot (probadas 10-240 s)
+# Diferencias entre conductores (rangos de la literatura, no medibles en 55 m de cámara):
+# aceleración y frenada cómoda lognormales; tiempo de reacción uniforme. La aceleración
+# calibrada en vídeo (0.52) queda como el conductor perezoso (percentil ~5).
+HUMANOS = dict(a_med=1.0, a_sigma=0.4, b_med=1.5, b_sigma=0.35, reac_min=0.4, reac_max=1.2)
 
 
 def params(ruta, camara):
@@ -38,7 +44,9 @@ def muestra(rng, d):
 
 
 class Circuito:
-    def __init__(self, n, largo, p, T_dist, humanos, v_obj, rng):
+    def __init__(self, n, largo, p, T_dist, humanos, v_obj, rng, variar=None):
+        """variar: dict como HUMANOS para dar a cada conductor su aceleración, frenada y
+        tiempo de reacción (por defecto, sí cuando son humanos)."""
         self.n, self.C, self.rng, self.humanos = n, largo, rng, humanos
         self.x = np.arange(n) * largo / n
         self.x[0] += 1.0                         # la única perturbación inicial
@@ -52,6 +60,13 @@ class Circuito:
         else:
             self.p["T"] = np.full(n, T_dist["p50"])
             self.osc = np.zeros(n); self.eps = np.zeros(n)
+        variar = (HUMANOS if humanos else None) if variar is None else (variar or None)
+        self.reac = np.zeros(n, int)          # pasos de retraso de percepción
+        if variar:
+            self.p["a"] = variar["a_med"] * rng.lognormal(0, variar["a_sigma"], n)
+            self.p["b"] = variar["b_med"] * rng.lognormal(0, variar["b_sigma"], n)
+            self.reac = np.round(rng.uniform(variar["reac_min"], variar["reac_max"], n) / DT).astype(int)
+        self.hist = []                         # (x, v) de los últimos pasos
         self.ruido = np.full(n, 1.0 if humanos else 0.0)
         self.robot = np.zeros(n, bool)
         self.v_med = np.zeros(n)        # media móvil de la propia velocidad (para el robot)
@@ -63,22 +78,48 @@ class Circuito:
         self.p["a"][i] = self.p["b"][i] = a_
         self.osc[i] = self.eps[i] = 0.0
         self.ruido[i] = 0.0
+        self.reac[i] = 1                      # sensores: 0.1 s
         self.robot[i] = True
 
     def paso(self):
         orden = np.argsort(self.x)
         lider = np.empty(self.n, int)
         lider[orden] = np.roll(orden, -1)
-        s = (self.x[lider] - self.x) % self.C - 4.5
         p = self.p
+        # cada uno ve la situación con su tiempo de reacción de retraso
+        self.hist.append((self.x.copy(), self.v.copy()))
+        if len(self.hist) > 20:
+            self.hist.pop(0)
+        if self.reac.any():
+            k = np.minimum(self.reac, len(self.hist) - 1)
+            idx = np.arange(self.n)
+            Xh = np.array([h[0] for h in self.hist]); Vh = np.array([h[1] for h in self.hist])
+            fila = len(self.hist) - 1 - k
+            x_yo, v_yo = Xh[fila, idx], Vh[fila, idx]
+            x_li, v_li = Xh[fila, lider], Vh[fila, lider]
+        else:
+            x_yo, v_yo, x_li, v_li = self.x, self.v, self.x[lider], self.v[lider]
+        s = (x_li - x_yo) % self.C - 4.5
+        if self.reac.any():
+            # ANTICIPACIÓN (Treiber, Human Driver Model): con lo que vio hace 'reac' s,
+            # extrapola a velocidad constante dónde estará el de delante ahora; su propia
+            # velocidad la conoce al momento
+            tr = self.reac * DT
+            s = s - tr * (v_yo - v_li)
+            v_yo = self.v
+            # reflejo: si el hueco REAL se ha vuelto crítico, lo nota al instante
+            s_ahora = (self.x[lider] - self.x) % self.C - 4.5
+            critico = s_ahora < p["s0"] + 0.5 * self.v
+            s = np.where(critico, np.minimum(s, s_ahora), s)
+            v_li = np.where(critico, self.v[lider], v_li)
         if self.humanos:
             k = DT / TAU_V0
             self.eps += -self.eps * k + self.osc * np.sqrt(2 * k) * self.rng.normal(size=self.n)
         v0 = self.v0_base * (1 + self.eps)
         s = np.maximum(s, 0.1)
-        s_star = p["s0"] + np.maximum(0, self.v * p["T"] + self.v * (self.v - self.v[lider])
+        s_star = p["s0"] + np.maximum(0, v_yo * p["T"] + v_yo * (v_yo - v_li)
                                       / (2 * np.sqrt(p["a"] * p["b"])))
-        a = p["a"] * (1 - (self.v / v0) ** 4 - (s_star / s) ** 2)
+        a = p["a"] * (1 - (v_yo / v0) ** 4 - (s_star / s) ** 2)
         if self.humanos:
             a = a + RUIDO_PEDAL * self.ruido * self.rng.normal(size=self.n)
         if self.robot.any():

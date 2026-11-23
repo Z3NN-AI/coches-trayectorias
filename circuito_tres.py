@@ -96,9 +96,9 @@ def main():
     robot = Circuito(a.n, a.largo, p, T, True, v_obj, rngs[2])
     robot.meter_robot(0, 2.0)
     anillos = [
-        (libro, "TEXTBOOK IDM + MOBIL", "classic algorithms, identical perfect drivers (MOBIL idle: 1 lane)",
-         "Treiber et al. 2000 (IDM) / Kesting et al. 2007 (MOBIL)"),
-        (prom, "OUR AVERAGE DRIVERS", "learned from real motorway video: each one different, imperfect",
+        (libro, "TEXTBOOK IDM + MOBIL", "textbook a=1.0 b=1.5 T=1.5 s, identical, no delay",
+         "Treiber 2000 (IDM) / Kesting 2007 (MOBIL, idle: 1 lane)"),
+        (prom, "OUR AVERAGE DRIVERS", "real spacing; own accel, braking, reaction 0.4-1.2 s",
          "reproduces Sugiyama et al. 2008 (phantom jam)"),
         (robot, "AVERAGE DRIVERS + 1 ROBOT", "same humans + 1 damping robot car (white outline)",
          "reproduces Stern et al. 2018 (one AV dissolves the jam)"),
