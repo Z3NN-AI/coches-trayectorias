@@ -96,6 +96,13 @@ class Poblacion:
         # ganas de cambiar de carril: multiplica las odds del modelo aprendido
         # (lognormal: la mayoría cerca de 1, algunos que no cambian nunca, otros que no paran)
         p["ganas"] = float(self.rng.lognormal(0.0, SIGMA_GANAS))
+        # cada conductor con su aceleración y frenada cómoda (rangos de la literatura,
+        # como circuito.HUMANOS); los pesados, limitados por la física
+        from circuito import HUMANOS
+        p["a"] = HUMANOS["a_med"] * float(self.rng.lognormal(0, HUMANOS["a_sigma"]))
+        p["b"] = HUMANOS["b_med"] * float(self.rng.lognormal(0, HUMANOS["b_sigma"]))
+        if g == 1:
+            p["a"] = min(p["a"], A_MAX_PESADO)
         # IMPRECISIÓN HUMANA: la velocidad preferida oscila (Ornstein-Uhlenbeck), cada uno
         # con su amplitud: el del control de crucero casi nada, el despistado bastante
         p["v0_base"] = p["v0"]
