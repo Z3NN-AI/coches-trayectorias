@@ -85,10 +85,13 @@ class Circuito:
             # AMORTIGUADOR (Stern 2018): ir a la velocidad media reciente, sin copiar los
             # acelerones del de delante; solo frena si el hueco se vuelve corto de verdad
             r = self.robot
-            # velocidad media de todo el circuito (la saca de su tiempo por vuelta)
-            self.v_med[r] += (self.v.mean() - self.v_med[r]) * DT / TAU_ROBOT
-            objetivo = np.maximum(self.v_med[r], 2.0)
-            a_suave = 0.3 * (objetivo - self.v[r])
+            # velocidad media reciente DEL DE DELANTE (no sus acelerones), y si sobra hueco
+            # respecto a un colchón generoso, se acerca poco a poco
+            self.v_med[r] += (self.v[lider][r] - self.v_med[r]) * DT / TAU_ROBOT
+            colchon = p["s0"][r] + self.v[r] * p["T"][r] * 1.5
+            objetivo = self.v_med[r] + 0.02 * (s[r] - colchon)
+            objetivo = np.clip(objetivo, 0.0, self.v0_base[r])
+            a_suave = np.clip(0.3 * (objetivo - self.v[r]), -1.5, 1.0)
             seguridad = p["a"][r] * (1 - ((p["s0"][r] + self.v[r] * 0.6) / s[r]) ** 2)
             a[r] = np.minimum(a_suave, np.maximum(seguridad, -9))
         a = np.clip(a, -9, 4)
