@@ -483,8 +483,12 @@ def main():
                   f"   p90 {r['cv_p90']:.2f} -> {r['calibrado_p90']:.2f}"
                   f"   líder cambia de ritmo {r['cv_cambia']:.2f} -> {r['calibrado_cambia']:.2f}")
 
-        mb = muestras_volante(df.drop(columns=["lider", "hueco", "v_lider"]), cambios, fps,
-                              params, centros)
+        if cfg.get("sin_volante"):   # posición lateral poco fiable: solo pedal y perfiles
+            print("  VOLANTE: cámara excluida (sin_volante en config.txt)")
+            mb = []
+        else:
+            mb = muestras_volante(df.drop(columns=["lider", "hueco", "v_lider"]), cambios, fps,
+                                  params, centros)
         if len(mb):
             mb["camara"] = nom
             mb["id"] = mb.id.astype(str) + "@" + nom
