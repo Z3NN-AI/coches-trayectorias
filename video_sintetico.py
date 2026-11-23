@@ -219,7 +219,7 @@ def main():
                         2, cv2.LINE_AA)
             out.write(img)
         t0 = esc.sim.t
-        v_ventana = 24.0
+        v_ventana = 24.0 if cfg["elefantes"] else 100 / 3.6
         nfr = int(a.duracion * FPS)
         for f in range(nfr):
             if f % cada == 0:
@@ -230,7 +230,7 @@ def main():
             el = [m for m in esc.sim.veh if m["id"] in esc.elefantes]
             objetivo = (np.mean([m["x"] for m in el]) - VENTANA * 0.35) if el else None
             vis = [m["v"] for m in esc.sim.veh if x_ini <= m["x"] <= x_ini + VENTANA]
-            v_obj = np.median(vis) if vis else v_ventana
+            v_obj = 100 / 3.6 if not esc.elefantes else (np.median(vis) if vis else v_ventana)
             if objetivo is not None:
                 v_obj = np.median([m["v"] for m in el]) + 0.2 * (objetivo - x_ini)
             v_ventana += np.clip(v_obj - v_ventana, -0.3, 0.3)

@@ -284,6 +284,10 @@ def perfil_clases(df):
             v_libre_kmh={f"p{q}": float(np.percentile(vlib, q)) for q in (5, 25, 50, 75, 95)}
             if len(vlib) >= 10 else None,
             uso_carriles={int(k): float(v / uso.sum()) for k, v in uso.items()},
+            # velocidad libre por carril: los rápidos van por la izquierda/mediana
+            v_libre_carril={int(c): {f"p{q}": float(np.percentile(vv, q)) for q in (5, 25, 50, 75, 95)}
+                            for c, vv in ((c, h.groupby("id").v.median().values * 3.6)
+                                          for c, h in libre.groupby("carril")) if len(vv) >= 10},
             cuota=float(g.id.nunique() / df[df.sentido == sen].id.nunique()))
     return out
 

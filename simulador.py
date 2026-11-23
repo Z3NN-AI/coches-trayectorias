@@ -35,6 +35,9 @@ DT = 0.1                 # s, paso de integración
 PASO_DECISION = 0.5      # s, cada cuánto se plantea cambiar de carril
 B_SEGURO = 4.0           # m/s², frenada máxima que un cambio puede imponer al de detrás
 DURACION_CAMBIO = {0: 4.0, 1: 6.0}   # s (ligero, pesado)
+GANAS_BASE = 5.0         # calibración global: iguala la tasa real de cambios por veh·km
+SIGMA_GANAS = 1.0        # dispersión entre conductores de las ganas de cambiar de carril
+P_VUELVE = 0.0           # fracción de conductores de coche que vuelven al carril 1 (el resto lo tapa)
 T_VOLVER = 6.0           # s, espera media de un camión para volver al carril 1 (regla)
 ESPERA_CAMBIO = 3.0      # s sin volver a plantearse otro cambio
 # Pesados: lo que los datos no identifican bien se toma de la física
@@ -75,9 +78,22 @@ class Poblacion:
         """Velocidad deseada de un conductor nuevo: muestreo de la distribución real."""
         return self.muestra((self.perfil.get(g) or self.perfil[0])["v_libre_kmh"]) / 3.6
 
-    def personalidad(self, g, v0=None):
+    def personalidad(self, g, v0=None, carril=None):
         p = dict(self.idm[g])
-        p["v0"] = v0 if v0 is not None else self.v_libre(g)
+        por_carril = (self.perfil.get(g) or {}).get("v_libre_carril") or {}
+        dist = por_carril.get(str(carril)) or por_carril.get(carril)
+        if v0 is not None:
+            p["v0"] = v0
+        elif dist and carril is not None:   # el que entra por el carril rápido quiere ir rápido
+            p["v0"] = self.muestra(dist) / 3.6
+        else:
+            p["v0"] = self.v_libre(g)
+        # TIPOS DE CONDUCTOR (supuestos, no medibles en 55 m de cámara):
+        # ganas de cambiar de carril: multiplica las odds del modelo aprendido
+        # (lognormal: la mayoría cerca de 1, algunos que no cambian nunca, otros que no paran)
+        p["ganas"] = float(self.rng.lognormal(0.0, SIGMA_GANAS))
+        # vuelve al carril 1 cuando no adelanta (los camiones siempre, por norma)
+        p["vuelve"] = bool(g == 1 or self.rng.uniform() < P_VUELVE)
         Td = self.T_dist.get(g) or self.T_dist.get(0)
         if Td:   # cada uno con su distancia real: el prudente, el normal, el que se pega
             p["T"] = self.muestra(Td)
@@ -127,7 +143,7 @@ class Trafico:
         g = 1 if clase in ("camion", "bus") else 0
         if self.pob.restringe_pesados and g == 1 and carril == self.pob.nc:
             carril = self.pob.nc - 1
-        p = self.pob.personalidad(g, v0)
+        p = self.pob.personalidad(g, v0, carril)
         p["v0"] = max(p["v0"], 1.05 * v, 5.0)
         self.veh.append(dict(id=vid, clase=clase, g=g, x=x, carril=int(carril), v=v,
                              p=p, L=LARGO.get(clase, 4.5),
@@ -207,6 +223,9 @@ class Trafico:
         if not F:
             return
         P3 = self.pob.p_cambio(F)
+        ganas = np.array([self.veh[f["i"]]["p"].get("ganas", 1.0) for f in F])
+        odds = P3 / (1 - P3 + 1e-12) * ganas * GANAS_BASE
+        P3 = odds / (1 + odds)
         h = 1 - (1 - P3) ** (PASO_DECISION / 3.0)    # prob. en este medio segundo
         tira = self.pob.rng.uniform(size=len(F))
         hechos = set()
@@ -229,19 +248,23 @@ class Trafico:
         self.volver_al_1(cand, hechos)
 
     def volver_al_1(self, cand, hechos):
-        """REGLA (no aprendida): un pesado fuera del carril 1 vuelve a él cuando no está
+        """REGLA (no aprendida): un pesado (o un coche de los que cumplen) fuera del carril 1 vuelve a él cuando no está
         adelantando a nadie allí y el hueco es seguro. En vídeo nunca se ve a un camión
         volver en fluido (pasa fuera de cámara), pero el 73 % van por el carril 1."""
         for i in cand:
             me = self.veh[i]
-            if i in hechos or me["g"] != 1 or me["carril"] <= 1 or me["prog"] < 1.0:
+            if i in hechos or not me["p"].get("vuelve", me["g"] == 1) or me["carril"] <= 1 or me["prog"] < 1.0:
                 continue
             dl = self.lider(i, me["carril"] - 1)
             if dl is not None:
                 o = self.veh[dl]
                 hueco = o["x"] - o["L"] - me["x"]
                 # sigue adelantando si allí delante hay alguien cerca y más lento que él
-                if hueco < max(2.0 * me["v"], 30.0) and o["v"] < me["v"] - 1.0:
+                if me["g"] == 1:   # camión: deja de adelantar en cuanto pasa al más lento
+                    sigue = hueco < max(2.0 * me["v"], 30.0) and o["v"] < me["v"] - 1.0
+                else:              # coche: no vuelve si enseguida tendría que frenar
+                    sigue = hueco < max(5.0 * me["v"], 80.0) and o["v"] < me["p"]["v0"] - 2.0
+                if sigue:
                     continue
             if self.pob.rng.uniform() > PASO_DECISION / T_VOLVER:   # no al instante
                 continue
