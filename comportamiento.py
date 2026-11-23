@@ -61,8 +61,8 @@ def cargar(camara):
                 pend = [np.polyfit(h.s, h.d, 1)[0] for _, h in g.groupby("id")
                         if len(h) > 15 and np.ptp(h.s) > 15]
                 if len(pend) > 20:
-                    k = float(np.median(pend))
-                    df.loc[g.index, "d"] = g.d - k * (g.s - g.s.median())
+                    pd_ = float(np.median(pend))
+                    df.loc[g.index, "d"] = g.d - pd_ * (g.s - g.s.median())
         # x: avance en el sentido de marcha; izq: hacia la izquierda del conductor
         df["x"] = np.where(df.sentido == "alejan", df.s, -df.s)
         df["izq"] = np.where(df.sentido == "alejan", df.d, -df.d)
@@ -436,6 +436,8 @@ def main():
     ap.add_argument("camaras", nargs="+")
     ap.add_argument("--entreno", type=float, default=0.5, help="fracción del tiempo para calibrar")
     ap.add_argument("--salida", default="salidas/comportamiento.json")
+    ap.add_argument("--excluir", nargs="*", default=[],
+                    help="CAMARA:SENTIDO a ignorar (p. ej. 01_wqctLW0Hb_0:alejan, el atasco)")
     a = ap.parse_args()
     rng = np.random.default_rng(0)
     informe, volante = {}, []
@@ -445,6 +447,10 @@ def main():
         nom = Path(cam).name
         if df is None:
             print(f"\n##### {nom}: sin estados (¿calibración fallida?), se omite"); continue
+        fuera = [e.split(":")[1] for e in a.excluir if e.split(":")[0] == nom]
+        if fuera:
+            print(f"\n  (se ignora el sentido {fuera} de {nom})")
+            df = df[~df.sentido.isin(fuera)]
         print(f"\n##### {nom}  ({cfg.get('mano')}, {(df.frame.max() + 1) / fps / 60:.0f} min, "
               f"{df.id.nunique()} vehículos)")
         centros = carriles(df, cfg.get("carril", 3.65), cfg["mano"])
