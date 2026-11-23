@@ -215,11 +215,22 @@ def pedal(df, fps, entreno, rng):
     m = m[(m.hueco > 1) & (m.hueco < 80) & (m.v > 1)]
     sub = lambda x: x.iloc[rng.permutation(len(x))[:4000]]
     m = m.assign(grupo=np.where(m.clase.isin(["camion", "bus"]), "pesado", "ligero"))
+    # régimen local: densidad (veh/km/carril) del sentido en ese fotograma, media de 5 s
+    dens = {}
+    for sen, g in df[df.carril > 0].groupby("sentido"):
+        largo = (g.x.quantile(0.98) - g.x.quantile(0.02)) / 1000
+        k = g.groupby("frame").size() / largo / max(g.carril.nunique(), 1)
+        k = k.reindex(range(int(k.index.min()), int(k.index.max()) + 1)).rolling(
+            int(5 * fps), min_periods=1, center=True).mean()
+        dens[sen] = k
+    kd = np.array([dens[s].get(f, np.nan) for s, f in zip(m.sentido, m.frame)])
+    m = m.assign(reg=np.where(kd >= 18, "denso", "libre"))
     params, res = {}, {}
     grupos = [(sen, None, g) for sen, g in m.groupby("sentido")] + \
-             [(sen, gr, g) for (sen, gr), g in m.groupby(["sentido", "grupo"])]
+             [(sen, gr, g) for (sen, gr), g in m.groupby(["sentido", "grupo"])] + \
+             [(sen, "@" + r, g) for (sen, r), g in m.groupby(["sentido", "reg"])]
     for sen, gr, g in grupos:
-        clave = sen if gr is None else f"{sen}/{gr}"
+        clave = sen if gr is None else (f"{sen}{gr}" if gr.startswith("@") else f"{sen}/{gr}")
         # horizonte: lo más largo (≤2 s) con suficientes parejas que sigan a la vista
         for h in (2.0, 1.5, 1.0):
             Ttr = tramos(df, sub(g[g.frame < corte]), fps, h)

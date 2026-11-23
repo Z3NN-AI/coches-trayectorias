@@ -106,6 +106,7 @@ class Trafico:
         self.veh = []          # dicts
         self.t = 0.0
         self.cambios = []      # (t, id, de, a)
+        self.vetos = {}        # decisiones del modelo vetadas por reglas a mano
         self.salidas = {}      # id -> t de salida
         self.sig_decision = 0.0
 
@@ -214,9 +215,12 @@ class Trafico:
                 continue
             me = self.veh[i]
             if self.pob.restringe_pesados and me["g"] == 1 and nuevo == self.pob.nc:
+                self.vetos["camion_carril3"] = self.vetos.get("camion_carril3", 0) + 1
                 continue
             if not self.seguro(i, nuevo):
+                self.vetos["seguridad"] = self.vetos.get("seguridad", 0) + 1
                 continue
+            self.vetos["aceptados"] = self.vetos.get("aceptados", 0) + 1
             self.cambios.append((self.t, me["id"], me["carril"], nuevo))
             me["lat0"], me["carril"], me["prog"] = me["lat"], nuevo, 0.0
             me["espera"] = ESPERA_CAMBIO + DURACION_CAMBIO[me["g"]]
@@ -357,6 +361,7 @@ def escena(a, info, modelo):
     vkm_real = reales.groupby("id").x.agg(lambda s_: s_.max() - s_.min()).sum() / 1000
     print(f"  cambios de carril: real {len(cr)}  |  simulado {len(sim.cambios)}   "
           f"({len(cr) / max(vkm_real, 1e-6):.1f} vs {len(sim.cambios) / max(vkm_real, 1e-6):.1f} por veh·km)")
+    print(f"  decisiones del modelo: {sim.vetos}")
     # carril de salida y velocidad por carril
     sal_real = reales.sort_values("frame").groupby("id").last()
     comunes = [v for v in sim.salidas if v in sal_real.index and sal_real.loc[v].x >= x_fin - 3]
