@@ -20,6 +20,7 @@ import numpy as np
 from simulador import RUIDO_PEDAL, SIGMA_V0, TAU_V0
 
 DT = 0.1
+TAU_ROBOT = 30.0   # s, ventana de la velocidad media que sigue el robot
 
 
 def params(ruta, camara):
@@ -51,7 +52,18 @@ class Circuito:
         else:
             self.p["T"] = np.full(n, T_dist["p50"])
             self.osc = np.zeros(n); self.eps = np.zeros(n)
+        self.ruido = np.full(n, 1.0 if humanos else 0.0)
+        self.robot = np.zeros(n, bool)
+        self.v_med = np.zeros(n)        # media móvil de la propia velocidad (para el robot)
         self.t = 0.0
+
+    def meter_robot(self, i, a_):
+        """Convierte el coche i en un conductor atento sin ruido (como el coche autónomo
+        de Stern et al. 2018): misma distancia mediana, reacción viva."""
+        self.p["a"][i] = self.p["b"][i] = a_
+        self.osc[i] = self.eps[i] = 0.0
+        self.ruido[i] = 0.0
+        self.robot[i] = True
 
     def paso(self):
         orden = np.argsort(self.x)
@@ -68,7 +80,17 @@ class Circuito:
                                       / (2 * np.sqrt(p["a"] * p["b"])))
         a = p["a"] * (1 - (self.v / v0) ** 4 - (s_star / s) ** 2)
         if self.humanos:
-            a = a + RUIDO_PEDAL * self.rng.normal(size=self.n)
+            a = a + RUIDO_PEDAL * self.ruido * self.rng.normal(size=self.n)
+        if self.robot.any():
+            # AMORTIGUADOR (Stern 2018): ir a la velocidad media reciente, sin copiar los
+            # acelerones del de delante; solo frena si el hueco se vuelve corto de verdad
+            r = self.robot
+            # velocidad media de todo el circuito (la saca de su tiempo por vuelta)
+            self.v_med[r] += (self.v.mean() - self.v_med[r]) * DT / TAU_ROBOT
+            objetivo = np.maximum(self.v_med[r], 2.0)
+            a_suave = 0.3 * (objetivo - self.v[r])
+            seguridad = p["a"][r] * (1 - ((p["s0"][r] + self.v[r] * 0.6) / s[r]) ** 2)
+            a[r] = np.minimum(a_suave, np.maximum(seguridad, -9))
         a = np.clip(a, -9, 4)
         v2 = np.maximum(self.v + a * DT, 0)
         self.x = (self.x + (self.v + v2) / 2 * DT) % self.C
@@ -101,6 +123,8 @@ def dibujar_anillo(img, cx, cy, R, c, titulo, hist):
         for a_, r_ in ((ang, R + 6), (ang, R + 22), (ang - L, R + 22), (ang - L, R + 6)):
             pts.append((cx + r_ * np.cos(a_), cy - r_ * np.sin(a_)))
         cv2.fillPoly(img, [np.int32(pts)], col, cv2.LINE_AA)
+        if c.robot[i]:
+            cv2.polylines(img, [np.int32(pts)], True, (255, 255, 255), 3, cv2.LINE_AA)
     vm = c.v.mean() * 3.6
     parados = int((c.v * 3.6 < 5).sum())
     cv2.putText(img, titulo, (cx - 190, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA)
@@ -131,6 +155,8 @@ def main():
     ap.add_argument("--camara", default="01_wqctLW0Hb_0")
     ap.add_argument("--perfecto-a", type=float, default=2.0,
                     help="aceleración/frenada del conductor perfecto (reacción viva, tipo ACC)")
+    ap.add_argument("--robot", action="store_true",
+                    help="izquierda: solo humanos; derecha: los mismos humanos + 1 robot amortiguador")
     ap.add_argument("--barrido", action="store_true", help="solo tabla: varias densidades")
     ap.add_argument("--salida", default="salidas/lista/circuito_atasco_fantasma.mp4")
     a = ap.parse_args()
@@ -152,9 +178,21 @@ def main():
     while salida.exists():
         salida = base.with_name(f"{base.stem}_v{k}{base.suffix}"); k += 1
     W, H, FPS = 1280, 720, 20
-    p_perf = dict(p, a=a.perfecto_a, b=a.perfecto_a)
-    perf = Circuito(a.n, a.largo, p_perf, T, False, a.v_obj / 3.6, np.random.default_rng(a.semilla))
-    hum = Circuito(a.n, a.largo, p, T, True, a.v_obj / 3.6, np.random.default_rng(a.semilla))
+    if a.robot:
+        salida = salida.with_name(salida.stem.replace("circuito_atasco_fantasma", "circuito_robot") + salida.suffix)
+        base, k = salida, 2
+        while salida.exists():
+            salida = base.with_name(f"{base.stem}_v{k}{base.suffix}"); k += 1
+        perf = Circuito(a.n, a.largo, p, T, True, a.v_obj / 3.6, np.random.default_rng(a.semilla))
+        hum = Circuito(a.n, a.largo, p, T, True, a.v_obj / 3.6, np.random.default_rng(a.semilla))
+        hum.meter_robot(0, 2.0)
+        tit = ("ONLY AVERAGE HUMANS", "SAME HUMANS + 1 ROBOT CAR (white)")
+    else:
+        p_perf = dict(p, a=a.perfecto_a, b=a.perfecto_a)
+        perf = Circuito(a.n, a.largo, p_perf, T, False, a.v_obj / 3.6, np.random.default_rng(a.semilla))
+        hum = Circuito(a.n, a.largo, p, T, True, a.v_obj / 3.6, np.random.default_rng(a.semilla))
+        tit = (f"PERFECT DRIVERS (alert: a=b={a.perfecto_a:.1f}, no noise)",
+               f"AVERAGE HUMANS (learned: a={p['a']:.2f}, b={p['b']:.2f})")
     tmp = salida.with_suffix(".tmp.mp4")
     out = cv2.VideoWriter(str(tmp), cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H))
     hp, hh = [], []
@@ -166,8 +204,8 @@ def main():
             hp.append((perf.v.mean() * 3.6, perf.v.min() * 3.6))
             hh.append((hum.v.mean() * 3.6, hum.v.min() * 3.6))
         img = np.full((H, W, 3), (40, 80, 40), np.uint8)
-        dibujar_anillo(img, 320, 330, 190, perf, f"PERFECT DRIVERS (alert: a=b={a.perfecto_a:.1f}, no noise)", hp)
-        dibujar_anillo(img, 960, 330, 190, hum, f"AVERAGE HUMANS (learned: a={p['a']:.2f}, b={p['b']:.2f})", hh)
+        dibujar_anillo(img, 320, 330, 190, perf, tit[0], hp)
+        dibujar_anillo(img, 960, 330, 190, hum, tit[1], hh)
         cv2.putText(img, f"{a.n} cars on a {a.largo:.0f} m ring, all asked to drive at {a.v_obj:.0f} km/h "
                          f"(Sugiyama 2008)  |  t = {perf.t:5.0f} s  (video x{acel})",
                     (20, H - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
