@@ -35,6 +35,7 @@ DT = 0.1                 # s, paso de integración
 PASO_DECISION = 0.5      # s, cada cuánto se plantea cambiar de carril
 B_SEGURO = 4.0           # m/s², frenada máxima que un cambio puede imponer al de detrás
 DURACION_CAMBIO = {0: 4.0, 1: 6.0}   # s (ligero, pesado)
+V_SIN_ADELANTAR_DENTRO = 60 / 3.6   # por debajo (cola) cada carril va a su ritmo
 GANAS_BASE = 5.0         # calibración global: iguala la tasa real de cambios por veh·km
 SIGMA_GANAS = 1.0        # dispersión entre conductores de las ganas de cambiar de carril
 P_VUELVE = 0.0           # fracción de conductores de coche que vuelven al carril 1 (el resto lo tapa)
@@ -192,9 +193,36 @@ class Trafico:
                 out[a_] = b_
         return out
 
+    def no_adelantar_por_dentro(self, acc):
+        """NORMA (no aprendida): en fluido no se adelanta por el carril interior. Si el
+        vehículo del carril de fuera (carril + 1), algo por delante, va más lento, se
+        ajusta la velocidad a la suya (modelo europeo de Treiber, umbral 60 km/h)."""
+        por = {}
+        for i, m in enumerate(self.veh):
+            por.setdefault(m["carril"], []).append(i)
+        for c, lst in por.items():
+            fuera = sorted(por.get(c + 1, []), key=lambda j: self.veh[j]["x"])
+            if not fuera:
+                continue
+            xs = np.array([self.veh[j]["x"] for j in fuera])
+            for i in lst:
+                me = self.veh[i]
+                k = np.searchsorted(xs, me["x"] - 2.0)   # el primero de fuera a mi altura o delante
+                if k >= len(fuera):
+                    continue
+                o = self.veh[fuera[k]]
+                d = o["x"] - me["x"]
+                if d > 60 or o["v"] >= me["v"] or o["v"] < V_SIN_ADELANTAR_DENTRO:
+                    continue
+                # seguirle de lado: como un líder virtual a distancia 'd' + hueco mínimo
+                a_lado = float(idm_vec(me["v"], o["v"], max(d, 0.0) + me["p"]["s0"] + 2.0, me["p"]))
+                acc[i] = min(acc[i], a_lado)
+        return acc
+
     def paso(self):
         lid = self.lideres()
         acc = [np.clip(self.acc(i, lid[i]), -9.0, 4.0) for i in range(len(self.veh))]
+        acc = [float(np.clip(a_, -9.0, 4.0)) for a_ in self.no_adelantar_por_dentro(acc)]
         for i, me in enumerate(self.veh):
             v2 = max(me["v"] + acc[i] * DT, 0.0)
             me["x"] += (me["v"] + v2) / 2 * DT
