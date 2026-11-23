@@ -41,7 +41,7 @@ RUIDO_PEDAL = 0.15       # m/s², imprecisión instantánea del pie
 V_SIN_ADELANTAR_DENTRO = 60 / 3.6   # por debajo (cola) cada carril va a su ritmo
 GANAS_BASE = 5.0         # calibración global: iguala la tasa real de cambios por veh·km
 SIGMA_GANAS = 1.0        # dispersión entre conductores de las ganas de cambiar de carril
-P_VUELVE = 0.0           # fracción de conductores de coche que vuelven al carril 1 (el resto lo tapa)
+P_VUELVE = 0.8           # fracción de conductores de coche que vuelven al carril 1 (el resto lo tapa)
 T_VOLVER = 6.0           # s, espera media de un camión para volver al carril 1 (regla)
 ESPERA_CAMBIO = 3.0      # s sin volver a plantearse otro cambio
 # Pesados: lo que los datos no identifican bien se toma de la física
@@ -110,6 +110,8 @@ class Poblacion:
         p["eps"] = float(self.rng.normal(0.0, p["osc"]))
         # vuelve al carril 1 cuando no adelanta (los camiones siempre, por norma)
         p["vuelve"] = bool(g == 1 or self.rng.uniform() < P_VUELVE)
+        if not p["vuelve"]:        # ABONADO a su carril: casi no cambia
+            p["ganas"] *= 0.2
         Td = self.T_dist.get(g) or self.T_dist.get(0)
         if Td:   # cada uno con su distancia real: el prudente, el normal, el que se pega
             p["T"] = self.muestra(Td)
