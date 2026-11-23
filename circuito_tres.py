@@ -30,7 +30,7 @@ def texto_c(img, s, cx, y, e, g=1, col=(255, 255, 255)):
     cv2.putText(img, s, (int(cx - w / 2), y), F, e, col, g, cv2.LINE_AA)
 
 
-def anillo(img, cx, cy, R, c, titulo, sub, hist, k_km):
+def anillo(img, cx, cy, R, c, titulo, sub, ref, hist, k_km):
     cv2.circle(img, (cx, cy), R + 16, (70, 70, 70), 34)
     cv2.circle(img, (cx, cy), R + 33, (230, 230, 230), 2)
     cv2.circle(img, (cx, cy), R, (230, 230, 230), 2)
@@ -44,6 +44,7 @@ def anillo(img, cx, cy, R, c, titulo, sub, hist, k_km):
             cv2.polylines(img, [np.int32(pts)], True, (255, 255, 255), 4, cv2.LINE_AA)
     texto_c(img, titulo, cx, 70, 1.0, 2)
     texto_c(img, sub, cx, 105, 0.6, 1, (210, 210, 210))
+    texto_c(img, ref, cx, 140, 0.7, 2, (120, 220, 255))
     vm = c.v.mean() * 3.6
     parados = int((c.v * 3.6 < 5).sum())
     flujo = k_km * vm
@@ -95,9 +96,12 @@ def main():
     robot = Circuito(a.n, a.largo, p, T, True, v_obj, rngs[2])
     robot.meter_robot(0, 2.0)
     anillos = [
-        (libro, "TEXTBOOK IDM + MOBIL", "classic algorithms, identical perfect drivers (MOBIL idle: 1 lane)"),
-        (prom, "OUR AVERAGE DRIVERS", "learned from real motorway video: each one different, imperfect"),
-        (robot, "AVERAGE DRIVERS + 1 ROBOT", "same humans + 1 damping robot car, white (Stern et al. 2018)"),
+        (libro, "TEXTBOOK IDM + MOBIL", "classic algorithms, identical perfect drivers (MOBIL idle: 1 lane)",
+         "Treiber et al. 2000 (IDM) / Kesting et al. 2007 (MOBIL)"),
+        (prom, "OUR AVERAGE DRIVERS", "learned from real motorway video: each one different, imperfect",
+         "reproduces Sugiyama et al. 2008 (phantom jam)"),
+        (robot, "AVERAGE DRIVERS + 1 ROBOT", "same humans + 1 damping robot car (white outline)",
+         "reproduces Stern et al. 2018 (one AV dissolves the jam)"),
     ]
     hist = [[], [], []]
     k_km = a.n / (a.largo / 1000)
@@ -115,8 +119,8 @@ def main():
                          f"({k_km:.0f} veh/km), all asked to drive at 30 km/h, one car starts 1 m out of place "
                          f"(Sugiyama 2008)  |  t = {anillos[0][0].t:4.0f} s  (video x{ACEL})",
                     (10, 16), F, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        for j, (c, tit, sub) in enumerate(anillos):
-            anillo(img, 320 + 640 * j, 470, 225, c, tit, sub, hist[j], k_km)
+        for j, (c, tit, sub, ref) in enumerate(anillos):
+            anillo(img, 320 + 640 * j, 490, 225, c, tit, sub, ref, hist[j], k_km)
         # leyenda de color
         for i in range(240):
             cv2.line(img, (W - 300 + i, H - 22), (W - 300 + i, H - 10), color(i * 25 / 240), 1)
@@ -127,7 +131,7 @@ def main():
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(tmp), "-c:v", "libx264", "-crf", "22",
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(salida)], check=True)
     tmp.unlink()
-    for (c, tit, _), h in zip(anillos, hist):
+    for (c, tit, *_), h in zip(anillos, hist):
         h = np.array(h[len(h) // 2:])
         print(f"{tit:28s} media {h[:, 0].mean():5.1f} km/h  flujo {k_km * h[:, 0].mean():5.0f} veh/h")
     print(f"Vídeo -> {salida}")
