@@ -1,98 +1,93 @@
-# coches-trayectorias
+# Traffic detection and modelling — the Average Real Driver (ARD)
 
-Experimento por curiosidad: a partir de un vídeo de tráfico grabado con cámara fija,
-detectar los vehículos, medir su velocidad real en km/h y dibujar delante de cada uno
-su **trayectoria prevista** con un **cono de posibilidades** que respeta la física.
-Incluye una **vista cenital** reconstruida (la carretera vista desde arriba, en metros).
-
-La idea de partida: un vehículo es una masa grande y no puede cambiar de trayectoria
-a capricho. Cuanto más rápido va, menos puede girar (la aceleración lateral `a = v·ω`
-está limitada), así que el cono se estrecha en autovía y se abre a baja velocidad.
-
-## Cómo funciona
+From fixed-camera motorway video to a simulator populated by **average real drivers**:
+not the ideal driver of textbook models, but the imperfect, varied one you meet on the road.
 
 ```
-vídeo ─► detectar.py ─► pistas.json ─► calibrar.py ─► calibracion.json
-                                   └──────────────► trayectorias.py ─► vídeo anotado + métricas
+video ─► detectar.py ─► tracks ─► calibrar.py ─► ground plane (metres)
+                                └─► trayectorias.py ─► states (EKF) + annotated video
+states ─► comportamiento.py ─► ARD: car-following + learned lane-change model + driver profiles
+ARD ─► simulador.py / video_sintetico.py ─► synthetic motorway, scenarios
+ARD ─► circuito.py / circuito_tres.py   ─► phantom-jam ring experiments
 ```
 
-1. **`detectar.py`** — YOLOv8-seg + ByteTrack. Guarda por fotograma la caja, la clase
-   y un punto de apoyo en el suelo sacado de la máscara de segmentación.
-2. **`calibrar.py`** — calibración automática del plano de la carretera, sin marcar
-   puntos a mano:
-   - horizonte: el que hace que cada vehículo vaya a velocidad constante;
-   - punto de fuga: donde se cortan las rectas que recorren los vehículos;
-   - escala de distancia: el ciclo de las **líneas discontinuas** detectadas automáticamente;
-   - escala lateral: la separación entre líneas vecinas (ancho de carril).
-   Si no encuentra líneas, recurre al ancho típico de los coches.
-3. **`trayectorias.py`** — un filtro de Kalman extendido por vehículo sobre el plano
-   del suelo (modelo CTRV: velocidad y giro constantes), con:
-   - **memoria**: un vehículo tapado sigue moviéndose con su física como "fantasma"
-     (3 s si hay otro vehículo delante tapándolo, 0,5 s si simplemente se pierde) y,
-     si el seguidor le cambia el número al reaparecer, hereda su pasado;
-   - **medidas robustas**: se descartan las medidas de vehículos tapados, los saltos
-     bruscos de tamaño de caja y los saltos aislados; solo un desvío persistente
-     cuenta como maniobra real;
-   - **masa**: camiones y buses giran menos y su límite es el de vuelco (~0,35 g),
-     no el de adherencia (~0,8 g);
-   - **interacción** (IDM): si alcanzas al de delante, frenas. La distancia cómoda se
-     estima para cada conductor a partir de cómo va ahora;
-   - **evaluación integrada**: compara cada predicción con la posición real 1 y 2 s
-     después, el giro aparente (en recta debería ser 0) y el error al reaparecer un
-     vehículo oculto.
+## 1. Detection and trajectories
 
-## Uso
+- **`detectar.py`**: YOLOv8-seg plus ByteTrack. For each vehicle it stores the box, the class and a ground-contact point taken from the segmentation mask.
+- **`calibrar.py`**: automatic ground-plane calibration, with no hand-picked points.
+  - Horizon: the one that makes each vehicle move at constant speed.
+  - Vanishing point: where the vehicle paths cross.
+  - Distance scale: the cycle of the dashed lane lines.
+  - Lateral scale: the lane width.
+  - Manual fall-back when the automatic method fails.
+- **`trayectorias.py`**: an extended Kalman filter (CTRV) per vehicle on the ground plane.
+  - Occlusion memory.
+  - Physical limits by mass and class.
+  - A 2 s prediction cone.
+  - Per-carriageway panels: fluidity (FREE FLOW / DENSE / CONGESTED and a bottleneck forecast), vehicles passed by class, average speed and collision-risk indicators (rear-end TTC, cut-in risk).
+  - A plausibility check, e.g. a truck faster than 90 km/h is flagged.
+- **`lote.py`**: batch processing of a playlist, in resumable 5-minute chunks.
+
+## 2. The Average Real Driver (ARD)
+
+A hybrid agent built in **`comportamiento.py`**, `conductor.py` and `simulador.py`. It has three parts.
+
+| Part | What it is |
+|---|---|
+| Pedal | IDM car-following whose parameters are **fitted to real trajectories** (least squares). |
+| Steering | **Learned** lane-change probability: gradient-boosted trees. Inputs: gaps, relative speeds, lane, vehicle length and the MOBIL incentive. Validated with GroupKFold by vehicle and leave-one-camera-out. |
+| Character | Each driver is drawn from distributions: desired speed (real per-lane distributions), headway (real), acceleration, comfortable braking, reaction time, lane-change eagerness, a slowly drifting speed "mood", pedal noise, and keep-right compliance (80 % comply, 20 % lane hoggers). |
+
+Traffic rules are written explicitly and marked as rules, not learned behaviour:
+- no undertaking above 60 km/h;
+- trucks return to lane 1 after overtaking;
+- a lane change must not force the follower to brake hard;
+- UK: heavy goods vehicles may not use lane 3.
+
+Lanes are numbered from the nearside in every country (lane 1 = left in the UK, right on the continent).
+
+## 3. Experiments
+
+- **Real vs simulated** (`video_simulacion.py`): vehicles enter the scene as they did in reality, and from then on the ARD drives them. On a free-flowing US camera, the lane speeds match within about 1–2 km/h.
+- **Synthetic motorway** (`video_sintetico.py`): 6 km, 3 lanes, only ARD agents. A dense scenario with a truck "elephant race", and a light scenario.
+- **Phantom traffic jam ring** (`circuito_tres.py`). 22 cars on a 230 m ring, compared side by side:
+
+| | Speed | Flow | Result |
+|---|---|---|---|
+| Textbook IDM (Treiber 2000) | 9.4 km/h | 901 veh/h | smooth |
+| **ARD** | ~7 km/h | ~700 veh/h | **stop-and-go wave emerges**, as in Sugiyama et al. 2008 |
+| ARD + 1 damping robot car | ~9.9 km/h | ~940 veh/h | **jam dissolved**, as in Stern et al. 2018 (5 of 6 seeds) |
+
+The jam was never programmed: it emerges from the measured spacing and the per-driver reaction. With 11 cars (half the density) none of the three jams.
+
+## Honest limitations
+
+- **Short view.** Each camera covers about 55 m (2–3 s per vehicle), so per-driver character (lane hogging, keep-right compliance, speed mood) cannot be measured. Those distributions are expert assumptions.
+- **Little data.** Two and a half usable cameras. The learned lane-change model saw only 186 changes and generalises poorly across cameras (AUC around 0.6).
+- **Weakly identified parameters.** The calibrated comfortable braking sits at its lower bound.
+- **Ring mismatches.** The simulated jam wave travels at about −10 km/h; the literature reports −15 to −20 km/h. The robot controller's averaging window (120 s) was chosen by testing several values.
+- **Rough edges.** The on-ramp merge model is unrealistic. On the synthetic motorway, lane speeds are about 10 km/h below the real ones.
+
+## Usage
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -r requirements.txt
-
-# un minuto de vídeo de prueba (cámara fija sobre una autovía británica)
-yt-dlp -f "bv*[height<=720]" --download-sections "*17:00-18:00" \
-       -o videos/trafico.mp4 "https://youtu.be/wqctLW0Hb_0"
-
-.venv/bin/python detectar.py videos/trafico.mp4 salidas/pistas.json
-.venv/bin/python calibrar.py salidas/pistas.json --ciclo 9 --carril 3.65
-.venv/bin/python trayectorias.py salidas/pistas.json salidas/trayectorias.mp4
+uv venv && uv pip install -r requirements.txt
+python detectar.py video.mp4 out/pistas.json          # YOLO weights: env YOLO_MODELO or modelo_local.txt
+python calibrar.py out/pistas.json out/calibracion.json
+python trayectorias.py out/pistas.json --calib out/calibracion.json --estados out/estados.json
+python comportamiento.py out/ --salida out/comportamiento.json
+python circuito_tres.py --duracion 1200               # ring experiment video
+python circuito_pruebas.py                            # robustness checks
 ```
 
-- `--ciclo` y `--carril` dependen de la normativa del país:
-  Reino Unido, autovía: `--ciclo 9 --carril 3.65` (línea de 2 m + hueco de 7 m);
-  España, autovía: `--ciclo 12.5 --carril 3.5`.
-- `YOLO_MODELO=/ruta/a/pesos.pt` para usar otros pesos (por defecto se descarga `yolov8m-seg.pt`).
-- Opciones útiles de `trayectorias.py`: `--sin-video` (solo métricas), `--sin-prior`
-  (rotondas o cruces: no asume una dirección de carretera), `--modelo cv|ctrv|ctra`,
-  `--sin-idm`, `--basico` (sin memoria ni filtros robustos, para comparar).
+Code comments are in Spanish; outputs and video overlays are in English.
 
-## Resultados en el vídeo de prueba (2 minutos, ~500 vehículos)
+## Credits
 
-| | |
-|---|---|
-| Velocidad vs. medida independiente por líneas del suelo | error mediano ±1–2 km/h |
-| Error de posición predicha a 1 s / 2 s | ~0,4 m / ~0,75 m |
-| Cono de 2 s: posiciones reales que caen dentro | ~95 % |
-| Vehículo oculto 1–3 s: error al reaparecer (con física / si se quedara quieto) | ~1,5 m / ~12 m |
+- Test videos: public YouTube traffic-camera footage. The videos are not included in this repository.
+- Detection: [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) and ByteTrack.
+- Models and experiments: IDM (Treiber, Hennecke and Helbing 2000), MOBIL (Kesting, Treiber and Helbing 2007), Sugiyama et al. 2008, Stern et al. 2018.
 
-Cosas que se probaron y **no** funcionaron mejor (y por eso no están por defecto):
-añadir la aceleración al estado (CTRA), el punto más bajo de la máscara como punto
-de apoyo, y la corrección geométrica del punto de contacto en camiones.
+## License
 
-## Limitaciones
-
-- Pensado para **cámara fija**. La calibración automática supone una carretera recta y
-  plana con líneas discontinuas.
-- Los vehículos se tratan como puntos sobre el suelo: un camión grande visto muy en
-  diagonal todavía genera algo de giro aparente, y un vehículo en el aire (accidente)
-  rompe la suposición de suelo plano.
-- El cono es físico más estadístico, no aprende el comportamiento de los conductores.
-  El siguiente paso natural sería un IMM (varios modelos de maniobra unidos por una
-  cadena de Markov) entrenado con datos reales, por ejemplo highD o rounD.
-
-## Créditos
-
-Vídeo de prueba: "Road traffic video for object recognition", de Andrey Nikishaev, en
-YouTube. No se incluye en el repositorio. Detección y seguimiento con
-[Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) y ByteTrack.
-
-## Licencia
-
-MIT. Ojo: Ultralytics YOLOv8 tiene licencia AGPL-3.0, que aplica a su uso.
+MIT. Note: Ultralytics YOLOv8 is AGPL-3.0, which applies to its use.

@@ -12,9 +12,11 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# Ruta a los pesos; si no existe, ultralytics descarga yolov8m-seg.pt automáticamente
-_LOCAL = Path.home() / "Desktop/AI/modelos/yolov8m-seg/yolov8m-seg.pt"
-MODELO = os.environ.get("YOLO_MODELO", str(_LOCAL) if _LOCAL.exists() else "yolov8m-seg.pt")
+# Weights path: env var YOLO_MODELO, or the first line of modelo_local.txt (not in git),
+# or else ultralytics downloads yolov8m-seg.pt automatically
+_LOCAL = Path(__file__).with_name("modelo_local.txt")
+MODELO = os.environ.get("YOLO_MODELO") or (
+    _LOCAL.read_text().strip() if _LOCAL.exists() else "yolov8m-seg.pt")
 CLASES = {2: "coche", 3: "moto", 5: "bus", 7: "camion"}  # ids COCO
 
 

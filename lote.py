@@ -3,13 +3,11 @@
 
 Uso: .venv/bin/python lote.py [nombre ...]      (sin nombres: todos los de LISTA)
 """
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 PY = ".venv/bin/python"
-os.environ.setdefault("YOLO_MODELO", os.path.expanduser("~/Desktop/AI/modelos/yolov8m-seg/yolov8m-seg.pt"))
 TROZO = 300  # s
 
 # normativa de marcas viales: ciclo línea+hueco (m), ancho de carril (m), mano de circulación

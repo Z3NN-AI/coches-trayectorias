@@ -5,3 +5,4 @@ videos/
 salidas/
 *.pt
 *.mp4
+modelo_local.txt
