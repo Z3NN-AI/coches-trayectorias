@@ -35,6 +35,9 @@ DT = 0.1                 # s, paso de integración
 PASO_DECISION = 0.5      # s, cada cuánto se plantea cambiar de carril
 B_SEGURO = 4.0           # m/s², frenada máxima que un cambio puede imponer al de detrás
 DURACION_CAMBIO = {0: 4.0, 1: 6.0}   # s (ligero, pesado)
+SIGMA_V0 = 0.05          # oscilación típica de la velocidad preferida (±5 %, hasta ±10 % según el conductor)
+TAU_V0 = 30.0            # s, cuánto tarda en cambiar ese "humor"
+RUIDO_PEDAL = 0.15       # m/s², imprecisión instantánea del pie
 V_SIN_ADELANTAR_DENTRO = 60 / 3.6   # por debajo (cola) cada carril va a su ritmo
 GANAS_BASE = 5.0         # calibración global: iguala la tasa real de cambios por veh·km
 SIGMA_GANAS = 1.0        # dispersión entre conductores de las ganas de cambiar de carril
@@ -93,6 +96,11 @@ class Poblacion:
         # ganas de cambiar de carril: multiplica las odds del modelo aprendido
         # (lognormal: la mayoría cerca de 1, algunos que no cambian nunca, otros que no paran)
         p["ganas"] = float(self.rng.lognormal(0.0, SIGMA_GANAS))
+        # IMPRECISIÓN HUMANA: la velocidad preferida oscila (Ornstein-Uhlenbeck), cada uno
+        # con su amplitud: el del control de crucero casi nada, el despistado bastante
+        p["v0_base"] = p["v0"]
+        p["osc"] = float(self.rng.uniform(0.0, 2.0) * SIGMA_V0)
+        p["eps"] = float(self.rng.normal(0.0, p["osc"]))
         # vuelve al carril 1 cuando no adelanta (los camiones siempre, por norma)
         p["vuelve"] = bool(g == 1 or self.rng.uniform() < P_VUELVE)
         Td = self.T_dist.get(g) or self.T_dist.get(0)
@@ -223,7 +231,14 @@ class Trafico:
         lid = self.lideres()
         acc = [np.clip(self.acc(i, lid[i]), -9.0, 4.0) for i in range(len(self.veh))]
         acc = [float(np.clip(a_, -9.0, 4.0)) for a_ in self.no_adelantar_por_dentro(acc)]
+        rng = self.pob.rng
+        k = DT / TAU_V0
         for i, me in enumerate(self.veh):
+            p = me["p"]
+            if "v0_base" in p:   # deriva lenta de la velocidad preferida + ruido de pedal
+                p["eps"] += -p["eps"] * k + p["osc"] * np.sqrt(2 * k) * rng.normal()
+                p["v0"] = p["v0_base"] * (1 + p["eps"])
+                acc[i] += RUIDO_PEDAL * rng.normal()
             v2 = max(me["v"] + acc[i] * DT, 0.0)
             me["x"] += (me["v"] + v2) / 2 * DT
             me["v"] = v2

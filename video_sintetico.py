@@ -156,7 +156,7 @@ def dibujar(esc, x_ini, t, cab, n_cambios0, w=1.0):
             cx, cy = pts.mean(0)
             cv2.arrowedLine(img, (int(cx), int(cy)), (int(cx), int(cy - d * 18)), (255, 255, 255), 2,
                             tipLength=0.5)
-        txt = f"{m['v'] * 3.6:.0f}" + (" TRUCK" if m["g"] else "")
+        txt = f"{m['v'] * 3.6:.0f}/{m['p']['v0'] * 3.6:.0f}" + (" TRUCK" if m["g"] else "")
         cv2.putText(img, txt, (int(pts[:, 0].min()), int(pts[:, 1].min()) - 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.33, (255, 255, 255), 1, cv2.LINE_AA)
     # cabecera
@@ -179,7 +179,7 @@ def dibujar(esc, x_ini, t, cab, n_cambios0, w=1.0):
     cv2.putText(img, "0", (ANCHO - 245, ALTO - 17), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
     cv2.putText(img, "130 km/h", (ANCHO - 26 - 50, ALTO - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
     nota = ("white outline = the 4 trucks of the scenario   " if esc.elefantes else "") + \
-        "arrow = changing lane   (lanes drawn 2x wide)"
+        "label = speed now / speed this driver wants   arrow = changing lane   (lanes 2x wide)"
     cv2.putText(img, nota,
                 (10, ALTO - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
     return img
