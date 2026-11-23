@@ -35,6 +35,7 @@ DT = 0.1                 # s, paso de integración
 PASO_DECISION = 0.5      # s, cada cuánto se plantea cambiar de carril
 B_SEGURO = 4.0           # m/s², frenada máxima que un cambio puede imponer al de detrás
 DURACION_CAMBIO = {0: 4.0, 1: 6.0}   # s (ligero, pesado)
+T_VOLVER = 6.0           # s, espera media de un camión para volver al carril 1 (regla)
 ESPERA_CAMBIO = 3.0      # s sin volver a plantearse otro cambio
 # Pesados: lo que los datos no identifican bien se toma de la física
 A_MAX_PESADO = 0.8       # m/s², un camión cargado no acelera más
@@ -225,6 +226,31 @@ class Trafico:
             me["lat0"], me["carril"], me["prog"] = me["lat"], nuevo, 0.0
             me["espera"] = ESPERA_CAMBIO + DURACION_CAMBIO[me["g"]]
             hechos.add(i)
+        self.volver_al_1(cand, hechos)
+
+    def volver_al_1(self, cand, hechos):
+        """REGLA (no aprendida): un pesado fuera del carril 1 vuelve a él cuando no está
+        adelantando a nadie allí y el hueco es seguro. En vídeo nunca se ve a un camión
+        volver en fluido (pasa fuera de cámara), pero el 73 % van por el carril 1."""
+        for i in cand:
+            me = self.veh[i]
+            if i in hechos or me["g"] != 1 or me["carril"] <= 1 or me["prog"] < 1.0:
+                continue
+            dl = self.lider(i, me["carril"] - 1)
+            if dl is not None:
+                o = self.veh[dl]
+                hueco = o["x"] - o["L"] - me["x"]
+                # sigue adelantando si allí delante hay alguien cerca y más lento que él
+                if hueco < max(2.0 * me["v"], 30.0) and o["v"] < me["v"] - 1.0:
+                    continue
+            if self.pob.rng.uniform() > PASO_DECISION / T_VOLVER:   # no al instante
+                continue
+            if not self.seguro(i, me["carril"] - 1):
+                continue
+            self.vetos["regla_volver_al_1"] = self.vetos.get("regla_volver_al_1", 0) + 1
+            self.cambios.append((self.t, me["id"], me["carril"], me["carril"] - 1))
+            me["lat0"], me["carril"], me["prog"] = me["lat"], me["carril"] - 1, 0.0
+            me["espera"] = ESPERA_CAMBIO + DURACION_CAMBIO[me["g"]]
 
     def seguro(self, i, nuevo):
         me = self.veh[i]
