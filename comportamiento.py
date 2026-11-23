@@ -45,12 +45,24 @@ def cargar(camara):
             continue
         fps = d["fps"]
         df = pd.DataFrame(d["estados"], columns=d["campos"])
+        if "z_max" in cfg:   # solo el tramo recto cercano (más allá la carretera curva)
+            df = df[(df.Z <= cfg["z_max"]) & (df.Z >= cfg.get("z_min", 0))]
         th = d["rumbo_carretera"]
         u = np.array([np.cos(th), np.sin(th)])
         n = np.array([-u[1], u[0]])   # izquierda de quien se aleja
         P = df[["X", "Z"]].values
         df["s"], df["d"] = P @ u, P @ n
         df["sentido"] = np.where(np.cos(df.rumbo - th) > 0, "alejan", "acercan")
+        if cfg.get("enderezar"):
+            # deriva lateral sistemática (curva suave o sesgo de perspectiva de la caja):
+            # pendiente mediana d(s) de cada vehículo, por sentido, y se descuenta
+            for sen in ("alejan", "acercan"):
+                g = df[df.sentido == sen]
+                pend = [np.polyfit(h.s, h.d, 1)[0] for _, h in g.groupby("id")
+                        if len(h) > 15 and np.ptp(h.s) > 15]
+                if len(pend) > 20:
+                    k = float(np.median(pend))
+                    df.loc[g.index, "d"] = g.d - k * (g.s - g.s.median())
         # x: avance en el sentido de marcha; izq: hacia la izquierda del conductor
         df["x"] = np.where(df.sentido == "alejan", df.s, -df.s)
         df["izq"] = np.where(df.sentido == "alejan", df.d, -df.d)
@@ -299,7 +311,7 @@ def rasgos(ids, X, V, C, L, VL, cen, p, elegidos=None, cortesia=0.3):
     filas = []
     for i in (range(len(X)) if elegidos is None else elegidos):
         c, x, v = int(C[i]), X[i], V[i]
-        if c < 1:
+        if c < 1 or c > nc:   # carril fuera de los centros conocidos
             continue
         dl, _ = entorno(c, x, i)
         a_yo, hueco_yo, dv_yo = acc(v, x, dl)
